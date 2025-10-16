@@ -16,7 +16,7 @@ from ttsplayer.ui.app import TrackListApp
     "--folder",
     "folder_path",
     type=click.Path(path_type=Path, readable=True, exists=True, file_okay=False),
-    required=True,
+    required=False,
     help="Folder containing audio files.",
 )
 @click.option(
@@ -29,19 +29,33 @@ from ttsplayer.ui.app import TrackListApp
     default=False,
     help="List tracks without launching the GUI.",
 )
-def main(folder_path: Path, recursive: bool, headless: bool) -> None:
+def main(folder_path: Path | None, recursive: bool, headless: bool) -> None:
     """Load an audio library and launch TTSPlayer."""
-    loader = AudioLibraryLoader(folder_path, recursive=recursive)
-    tracks = loader.load_tracks()
-
     if headless:
+        if folder_path is None:
+            raise click.BadParameter(
+                "--folder is required when running in headless mode.", param="folder"
+            )
+        loader = AudioLibraryLoader(folder_path, recursive=recursive)
+        tracks = loader.load_tracks()
         _print_tracks(tracks)
         return
 
-    player = TrackPlayer()
-    player.preload(tracks)
+    tracks = []
+    if folder_path is not None:
+        loader = AudioLibraryLoader(folder_path, recursive=recursive)
+        tracks = loader.load_tracks()
 
-    app = TrackListApp(tracks=tracks, player=player)
+    player = TrackPlayer()
+    if tracks:
+        player.preload(tracks)
+
+    app = TrackListApp(
+        tracks=tracks,
+        player=player,
+        library_root=folder_path,
+        recursive=recursive,
+    )
     app.run()
 
 

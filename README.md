@@ -30,13 +30,18 @@ uv pip install -e .[dev]
 
 ### Running the App
 
-```bash
-# Launch the GUI against an audio folder
-uv run python -m ttsplayer --folder /path/to/library
+- Run the GUI and pick a library folder from the `Open Folder…` button:
 
-# Show the discovered tracks without the GUI
-uv run python -m ttsplayer --folder /path/to/library --headless
-```
+  ```bash
+  uv run python -m ttsplayer
+  ```
+
+- Preload a specific folder at startup or list it in headless mode:
+
+  ```bash
+  uv run python -m ttsplayer --folder /path/to/library
+  uv run python -m ttsplayer --folder /path/to/library --headless
+  ```
 
 ### Testing & Linting
 

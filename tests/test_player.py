@@ -200,3 +200,16 @@ def test_player_seek_past_end_stops(sample_tracks: Iterable[Track]) -> None:
     player.seek(10.0)
     assert player.is_playing() is False
     assert math.isclose(player.get_current_position(), 3.0, rel_tol=1e-3)
+
+
+def test_player_clear_resets_loaded_tracks(sample_tracks: Iterable[Track]) -> None:
+    lengths = {track.audio_path.as_posix(): 4.0 for track in sample_tracks}
+    player, _ = make_player(lengths)
+    player.preload(sample_tracks)
+
+    assert player.get_track_length("greeting.wav") is not None
+
+    player.clear()
+
+    assert player.get_track_length("greeting.wav") is None
+    assert player.supports_seeking("greeting.wav") is False

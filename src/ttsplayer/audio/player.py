@@ -107,6 +107,14 @@ class TrackPlayer:
         self._last_position = 0.0
         self._active_segment = None
 
+    def clear(self) -> None:
+        """Remove all cached tracks and reset mixer state."""
+        self.stop()
+        self._sounds.clear()
+        self._lengths.clear()
+        self._raw_audio.clear()
+        self._active_segment = None
+
     def is_playing(self) -> bool:
         """Return True if audio is currently playing."""
         return bool(self._current_channel and self._current_channel.get_busy())

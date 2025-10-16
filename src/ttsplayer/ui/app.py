@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import sys
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Sequence
 
 import math
@@ -12,6 +13,7 @@ from PySide6.QtCore import Qt, QSize, QTimer, QRectF
 from PySide6.QtGui import QColor, QPainter, QPainterPath
 from PySide6.QtWidgets import (
     QApplication,
+    QFileDialog,
     QFrame,
     QHBoxLayout,
     QLabel,
@@ -19,6 +21,7 @@ from PySide6.QtWidgets import (
     QListWidget,
     QListWidgetItem,
     QMainWindow,
+    QMessageBox,
     QPushButton,
     QSizePolicy,
     QSlider,
@@ -26,6 +29,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from ttsplayer.audio.loader import AudioLibraryLoader
 from ttsplayer.audio.player import TrackPlayer
 from ttsplayer.models import Track
 
@@ -94,7 +98,14 @@ class TrackCardWidget(QFrame):
 class TrackListWindow(QMainWindow):
     """Main window displaying available tracks and their transcripts."""
 
-    def __init__(self, tracks: Sequence[Track], player: TrackPlayer) -> None:
+    def __init__(
+        self,
+        tracks: Sequence[Track],
+        player: TrackPlayer,
+        *,
+        library_root: Path | None = None,
+        recursive: bool = False,
+    ) -> None:
         super().__init__()
         self._player = player
         self._suppress_autoplay = True
@@ -105,10 +116,19 @@ class TrackListWindow(QMainWindow):
         self._progress_timer = QTimer(self)
         self._progress_timer.setInterval(100)
         self._progress_timer.timeout.connect(self._refresh_progress)
+        self._library_root = Path(library_root) if library_root else None
+        self._recursive = recursive
+        self._tracks: list[Track] = list(tracks)
         self.setWindowTitle("TTSPlayer")
-        self._build_ui(tracks)
+        self._build_ui()
+        if self._tracks:
+            self._populate_track_list(self._tracks)
+        else:
+            self._reset_progress_ui(clear_current=True)
+        self._update_library_label()
+        self._suppress_autoplay = False
 
-    def _build_ui(self, tracks: Sequence[Track]) -> None:
+    def _build_ui(self) -> None:
         central = QWidget(self)
         central.setObjectName("mainContainer")
         layout = QVBoxLayout(central)
@@ -119,9 +139,23 @@ class TrackListWindow(QMainWindow):
         title.setObjectName("windowTitle")
         title.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
 
+        self.load_button = QPushButton("Open Folder…", central)
+        self.load_button.clicked.connect(self._choose_library)
+
+        header = QHBoxLayout()
+        header.setContentsMargins(0, 0, 0, 0)
+        header.setSpacing(12)
+        header.addWidget(title)
+        header.addStretch(1)
+        header.addWidget(self.load_button)
+
         subtitle = QLabel("Select a card to play its audio instantly.", central)
         subtitle.setObjectName("windowSubtitle")
         subtitle.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+
+        self.library_path_label = QLabel("", central)
+        self.library_path_label.setObjectName("libraryPath")
+        self.library_path_label.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
 
         self.track_list = QListWidget(central)
         self.track_list.setSelectionMode(QListWidget.SingleSelection)
@@ -130,17 +164,6 @@ class TrackListWindow(QMainWindow):
         self.track_list.setResizeMode(QListView.Adjust)
         self.track_list.setVerticalScrollMode(QListWidget.ScrollPerPixel)
         self.track_list.setObjectName("trackList")
-
-        for track in tracks:
-            item = QListWidgetItem()
-            item.setData(Qt.UserRole, track.identifier)
-            card = TrackCardWidget(track, parent=central)
-            size_hint = card.sizeHint()
-            size_hint.setHeight(size_hint.height() + 12)
-            item.setSizeHint(size_hint)
-            self.track_list.addItem(item)
-            self.track_list.setItemWidget(item, card)
-            self._card_widgets[track.identifier] = card
 
         self.track_list.itemSelectionChanged.connect(self._on_selection_changed)
         self.track_list.itemDoubleClicked.connect(self._play_selected)
@@ -176,18 +199,83 @@ class TrackListWindow(QMainWindow):
         controls.addWidget(self.replay_button)
         controls.addWidget(self.stop_button)
 
-        layout.addWidget(title)
+        layout.addLayout(header)
         layout.addWidget(subtitle)
+        layout.addWidget(self.library_path_label)
         layout.addWidget(self.track_list)
         layout.addLayout(controls)
 
         central.setLayout(layout)
         self.setCentralWidget(central)
         self._apply_styles()
-        if self.track_list.count():
+
+    def _update_library_label(self) -> None:
+        if self._library_root:
+            self.library_path_label.setText(f"Folder: {self._library_root}")
+        else:
+            self.library_path_label.setText("No folder selected.")
+
+    def _populate_track_list(self, tracks: Sequence[Track]) -> None:
+        self.track_list.blockSignals(True)
+        self.track_list.clear()
+        self._card_widgets.clear()
+
+        for track in tracks:
+            item = QListWidgetItem()
+            item.setData(Qt.UserRole, track.identifier)
+            card = TrackCardWidget(track, parent=self.track_list)
+            size_hint = card.sizeHint()
+            size_hint.setHeight(size_hint.height() + 12)
+            item.setSizeHint(size_hint)
+            self.track_list.addItem(item)
+            self.track_list.setItemWidget(item, card)
+            self._card_widgets[track.identifier] = card
+
+        self.track_list.blockSignals(False)
+        self._current_track_id = None
+
+        if tracks:
             self.track_list.setCurrentRow(0)
+        else:
+            self._reset_progress_ui(clear_current=True)
+            self.replay_button.setEnabled(False)
+            self.stop_button.setEnabled(False)
             self._update_card_selection_states()
-        self._suppress_autoplay = False
+
+    def _choose_library(self) -> None:
+        start_dir = str(self._library_root) if self._library_root else ""
+        selected = QFileDialog.getExistingDirectory(self, "Select Audio Folder", start_dir)
+        if not selected:
+            return
+        self._load_library_from_path(Path(selected))
+
+    def _load_library_from_path(self, path: Path) -> None:
+        loader = AudioLibraryLoader(path, recursive=self._recursive)
+        try:
+            tracks = loader.load_tracks()
+        except Exception as exc:  # pragma: no cover - UI dialog
+            QMessageBox.critical(self, "Unable to load folder", str(exc))
+            return
+
+        self._library_root = path
+        self._player.clear()
+        if tracks:
+            self._player.preload(tracks)
+        self._tracks = list(tracks)
+
+        previous_state = self._suppress_autoplay
+        self._suppress_autoplay = True
+        self._populate_track_list(self._tracks)
+        self._suppress_autoplay = previous_state
+
+        self._update_library_label()
+
+        if not tracks:  # pragma: no cover - UI dialog
+            QMessageBox.information(
+                self,
+                "No audio files found",
+                "No supported audio files were found in the selected folder.",
+            )
 
     def _on_selection_changed(self) -> None:
         identifier = self._current_identifier()
@@ -335,6 +423,9 @@ class TrackListWindow(QMainWindow):
         if self._current_track_id:
             self._update_card_progress(self._current_track_id, fraction)
 
+    def shutdown(self) -> None:
+        self._player.close()
+
     def _apply_styles(self) -> None:
         self.setStyleSheet(
             """
@@ -356,6 +447,10 @@ class TrackListWindow(QMainWindow):
                 font-size: 12px;
                 color: #52607d;
                 min-width: 42px;
+            }
+            QLabel#libraryPath {
+                font-size: 12px;
+                color: #4e5a73;
             }
             QListWidget#trackList {
                 background: transparent;
@@ -456,6 +551,8 @@ class TrackListApp:
 
     tracks: Sequence[Track]
     player: TrackPlayer
+    library_root: Path | None = None
+    recursive: bool = False
 
     def run(self) -> None:
         app = QApplication.instance()
@@ -464,9 +561,13 @@ class TrackListApp:
             app = QApplication(sys.argv)
             created_app = True
 
-        app.aboutToQuit.connect(self.player.close)
-
-        window = TrackListWindow(self.tracks, self.player)
+        window = TrackListWindow(
+            self.tracks,
+            self.player,
+            library_root=self.library_root,
+            recursive=self.recursive,
+        )
+        app.aboutToQuit.connect(window.shutdown)
         window.show()
 
         try:
@@ -474,4 +575,4 @@ class TrackListApp:
         finally:
             if created_app:
                 # Ensure the mixer is closed if the window closes without invoking closeEvent.
-                self.player.close()
+                window.shutdown()
